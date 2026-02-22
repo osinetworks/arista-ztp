@@ -12,27 +12,29 @@ services:
     network_mode: host
 
     environment:
-      # ZTP server settings
+      # --- Read from .env ---
+      - ZTP_SERVER_IP=${SERVER_IP}
+      - ZTP_PORT=${HTTP_PORT}
+      - ZTP_INTERFACE=${INTERFACE}
+      - PRIORITY_WAIT_TIMEOUT=${PRIORITY_WAIT_TIMEOUT}
+      - LOG_LEVEL=${LOG_LEVEL}
+
+      # dnsmasq template substitution values (used by entrypoint.sh)
+      - DHCP_RANGE_START=${DHCP_RANGE_START}
+      - DHCP_RANGE_END=${DHCP_RANGE_END}
+      - DHCP_SUBNET=${DHCP_SUBNET}
+      - DHCP_LEASE=${DHCP_LEASE}
+      - DNS_SERVER=${DNS_SERVER}
+
+      # --- Fixed values (not network-specific) ---
       - ZTP_HOST=0.0.0.0
-      - ZTP_PORT=8080
       - ZTP_BASE_DIR=/var/www/ztp
       - INVENTORY_PATH=/var/www/ztp/config/inventory.yaml
       - LOG_DIR=/var/www/ztp/logs
-      - LOG_LEVEL=INFO
-      # Server IP — included in manifest response so switches know
-      # which vendor bootstrap was served. Must match your laptop's
-      # IP on the switch-facing interface.
-      - ZTP_SERVER_IP=192.168.100.1
-      # Max seconds to wait for lower-priority switches before
-      # releasing the manifest anyway (default 30 min)
-      - PRIORITY_WAIT_TIMEOUT=1800
 
     volumes:
       # Inventory config (editable without rebuild)
       - ./config/inventory.yaml:/var/www/ztp/config/inventory.yaml
-
-      # dnsmasq config (editable without rebuild)
-      - ./config/dnsmasq.conf:/etc/dnsmasq.conf
 
       # Bootstrap scripts (editable without rebuild)
       - ./scripts/bootstrap_arista:/var/www/ztp/bootstrap_arista
@@ -53,7 +55,7 @@ services:
       - NET_RAW
 
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:${HTTP_PORT}/health"]
       interval: 30s
       timeout: 5s
       retries: 3

@@ -71,22 +71,66 @@ if [ -z "$IFACE" ]; then
     exit 1
 fi
 
-# Write interface to writable override (avoids touching the bind-mounted dnsmasq.conf)
-DNSMASQ_OVERRIDE="/tmp/dnsmasq-interface.conf"
-echo "interface=${IFACE}" > "$DNSMASQ_OVERRIDE"
+# -----------------------------------------------------------
+# Render dnsmasq config from template
+# Substitutes placeholders with values from environment (.env)
+# -----------------------------------------------------------
+DNSMASQ_TEMPLATE="/etc/dnsmasq.conf.template"
+DNSMASQ_RENDERED="/etc/dnsmasq.conf"        # natural dnsmasq config path
+DNSMASQ_IFACE_CONF="/tmp/dnsmasq-interface.conf"
+
+# Validate required env vars
+MISSING=0
+for VAR in SERVER_IP HTTP_PORT DHCP_RANGE_START DHCP_RANGE_END DHCP_SUBNET DHCP_LEASE DNS_SERVER; do
+    VAL="${!VAR:-}"
+    if [ -z "$VAL" ]; then
+        # Map docker-compose env names to .env names
+        case "$VAR" in
+            SERVER_IP)       VAL="${ZTP_SERVER_IP:-}" ;;
+            HTTP_PORT)       VAL="${ZTP_PORT:-}" ;;
+        esac
+    fi
+    if [ -z "$VAL" ]; then
+        echo "[entrypoint] WARNING: $VAR is not set — dnsmasq config may be incomplete"
+        MISSING=1
+    fi
+done
+
+# Use ZTP_ prefixed names (passed by docker-compose from .env)
+_SERVER_IP="${ZTP_SERVER_IP:-192.168.100.1}"
+_HTTP_PORT="${ZTP_PORT:-8080}"
+_DHCP_START="${DHCP_RANGE_START:-192.168.100.20}"
+_DHCP_END="${DHCP_RANGE_END:-192.168.100.100}"
+_DHCP_SUBNET="${DHCP_SUBNET:-255.255.255.0}"
+_DHCP_LEASE="${DHCP_LEASE:-1h}"
+_DNS="${DNS_SERVER:-1.1.1.1,8.8.8.8}"
+
+echo "[entrypoint] Rendering dnsmasq config from template..."
+echo "[entrypoint]   SERVER_IP   : $_SERVER_IP"
+echo "[entrypoint]   HTTP_PORT   : $_HTTP_PORT"
+echo "[entrypoint]   DHCP range  : $_DHCP_START - $_DHCP_END / $_DHCP_SUBNET"
+echo "[entrypoint]   DHCP lease  : $_DHCP_LEASE"
+echo "[entrypoint]   DNS servers : $_DNS"
+
+sed     -e "s|__SERVER_IP__|${_SERVER_IP}|g"     -e "s|__HTTP_PORT__|${_HTTP_PORT}|g"     -e "s|__DHCP_RANGE_START__|${_DHCP_START}|g"     -e "s|__DHCP_RANGE_END__|${_DHCP_END}|g"     -e "s|__DHCP_SUBNET__|${_DHCP_SUBNET}|g"     -e "s|__DHCP_LEASE__|${_DHCP_LEASE}|g"     -e "s|__DNS_SERVER__|${_DNS}|g"     "$DNSMASQ_TEMPLATE" > "$DNSMASQ_RENDERED"
+
+echo "[entrypoint] dnsmasq config rendered → $DNSMASQ_RENDERED (natural path)"
+
+# Write interface override
+echo "interface=${IFACE}" > "$DNSMASQ_IFACE_CONF"
 echo "[entrypoint] dnsmasq interface set to: $IFACE"
 
 # -----------------------------------------------------------
 # Start dnsmasq
 # -----------------------------------------------------------
 echo "[entrypoint] Starting dnsmasq..."
+# dnsmasq reads /etc/dnsmasq.conf by default — no --conf-file flag needed
 dnsmasq \
     --no-daemon \
     --log-dhcp \
     --log-queries \
     --log-facility=- \
-    --conf-file=/etc/dnsmasq.conf \
-    --conf-file="$DNSMASQ_OVERRIDE" &
+    --conf-file="$DNSMASQ_IFACE_CONF" &
 DNSMASQ_PID=$!
 
 # -----------------------------------------------------------

@@ -30,8 +30,11 @@ import urllib.error
 # -----------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------
-SERVER_IP   = "192.168.100.1"
-SERVER_PORT = "8080"
+# SERVER_IP and SERVER_PORT are injected by the ZTP server
+# at serve time — no need to hardcode them here.
+# The server rewrites these two lines before sending the script.
+SERVER_IP   = "__ZTP_SERVER_IP__"
+SERVER_PORT = "__ZTP_SERVER_PORT__"
 BASE_URL    = f"http://{SERVER_IP}:{SERVER_PORT}"
 MAX_RETRIES = 5
 RETRY_DELAY = 15  # seconds — Guest Shell needs more time to stabilize

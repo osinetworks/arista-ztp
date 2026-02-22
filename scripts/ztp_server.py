@@ -103,23 +103,39 @@ def is_priority_clear(serial: str) -> tuple[bool, str]:
 # File serving endpoints
 # -----------------------------------------------------------
 
+def _inject_server_config(script_path: str) -> str:
+    """
+    Read bootstrap script and replace __ZTP_SERVER_IP__ / __ZTP_SERVER_PORT__
+    placeholders with the actual values from environment.
+    This avoids hardcoding the server IP in scripts — change .env, rebuild,
+    and the new IP is automatically sent to every switch.
+    """
+    with open(script_path, "r") as f:
+        content = f.read()
+    content = content.replace("__ZTP_SERVER_IP__",   SERVER_IP)
+    content = content.replace("__ZTP_SERVER_PORT__", str(PORT))
+    return content
+
+
 @app.route("/bootstrap/arista", methods=["GET"])
 @app.route("/bootstrap",         methods=["GET"])  # legacy compatibility
 def serve_bootstrap_arista():
-    """Serve the Arista EOS bootstrap script."""
+    """Serve the Arista EOS bootstrap script with server IP/port injected."""
     client_ip     = request.remote_addr
     arista_serial = request.headers.get("X-Arista-Serial", "")
     arista_sku    = request.headers.get("X-Arista-SKU", "")
     logger.info(f"[ARISTA] Bootstrap requested by {client_ip} serial={arista_serial} sku={arista_sku}")
-    return send_from_directory(BASE_DIR, "bootstrap_arista", mimetype="text/plain")
+    script = _inject_server_config(os.path.join(BASE_DIR, "bootstrap_arista"))
+    return script, 200, {"Content-Type": "text/plain"}
 
 
 @app.route("/bootstrap/cisco", methods=["GET"])
 def serve_bootstrap_cisco():
-    """Serve the Cisco IOS XE bootstrap script."""
+    """Serve the Cisco IOS XE bootstrap script with server IP/port injected."""
     client_ip = request.remote_addr
     logger.info(f"[CISCO] Bootstrap requested by {client_ip}")
-    return send_from_directory(BASE_DIR, "bootstrap_cisco", mimetype="text/plain")
+    script = _inject_server_config(os.path.join(BASE_DIR, "bootstrap_cisco"))
+    return script, 200, {"Content-Type": "text/plain"}
 
 
 @app.route("/configs/<path:filename>", methods=["GET"])

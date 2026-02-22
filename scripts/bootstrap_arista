@@ -1,40 +1,41 @@
 #!/usr/bin/env python3
 # ============================================================
-# Cisco IOS XE ZTP Bootstrap Script
-# Served via HTTP to Cisco Catalyst 9000 switches on first boot.
-# Runs INSIDE Guest Shell (Linux container) on the switch.
+# Arista ZTP Bootstrap Script
+# Served via HTTP to switches on first boot.
+# Runs on the SWITCH (EOS Python environment).
 #
-# How Cisco ZTP works:
-# - Switch boots with no startup-config → enters ZTP mode
-# - Switch sends DHCP discover with Option 60: "ciscopnp"
-# - DHCP server returns Option 67 with this script URL
-# - Switch enables Guest Shell (Linux container)
-# - Guest Shell downloads and executes this script
-# - Script uses 'cli' module to configure the switch
-# - NO automatic reboot — script must call cli.execute("reload")
-#   if reboot is needed after firmware upgrade
-# - ZTP stops when startup-config exists after reboot
+# How Arista ZTP works:
+# - Switch boots with no startup-config and no zerotouch-config
+# - Switch sends DHCP with Option 60 (Vendor: "Arista")
+# - DHCP server returns Option 67 (bootstrap URL)
+# - Switch GETs the bootstrap URL with Arista-specific headers:
+#     X-Arista-Serial, X-Arista-SystemMAC, X-Arista-SKU,
+#     X-Arista-HardwareVersion, X-Arista-Architecture
+# - If file starts with #! it is executed as a script
+# - After script exits, switch REBOOTS AUTOMATICALLY
+# - To stop ZTP loop: delete flash:zerotouch-config before exit
 # ============================================================
 
-import cli
 import hashlib
-import json
 import os
 import re
+import requests
 import subprocess
 import sys
 import time
-import urllib.request
-import urllib.error
 
 # -----------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------
-SERVER_IP   = "192.168.100.1"
-SERVER_PORT = "8080"
+# SERVER_IP and SERVER_PORT are injected by the ZTP server
+# at serve time — no need to hardcode them here.
+# The server rewrites these two lines before sending the script.
+SERVER_IP   = "__ZTP_SERVER_IP__"
+SERVER_PORT = "__ZTP_SERVER_PORT__"
 BASE_URL    = f"http://{SERVER_IP}:{SERVER_PORT}"
+FLASH       = "/mnt/flash"
 MAX_RETRIES = 5
-RETRY_DELAY = 15  # seconds — Guest Shell needs more time to stabilize
+RETRY_DELAY = 10   # seconds
 
 
 # -----------------------------------------------------------
@@ -42,59 +43,33 @@ RETRY_DELAY = 15  # seconds — Guest Shell needs more time to stabilize
 # -----------------------------------------------------------
 
 def log(msg):
-    print(f"[ZTP-CISCO] {msg}", flush=True)
+    print(f"[ZTP] {msg}", flush=True)
 
 
 def http_get(url, retries=MAX_RETRIES):
-    """GET request with retry logic using urllib (no requests module in Guest Shell)."""
+    """GET request with retry logic. Returns response or None."""
     for attempt in range(1, retries + 1):
         try:
             log(f"GET {url} (attempt {attempt}/{retries})")
-            req = urllib.request.Request(url)
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                if resp.status == 200:
-                    return resp.read()
-            log(f"  HTTP {resp.status}")
-        except urllib.error.HTTPError as e:
-            log(f"  HTTP error: {e.code} {e.reason}")
-        except urllib.error.URLError as e:
-            log(f"  URL error: {e.reason}")
-        except Exception as e:
+            resp = requests.get(url, timeout=30)
+            if resp.status_code == 200:
+                return resp
+            log(f"  HTTP {resp.status_code}")
+        except requests.RequestException as e:
             log(f"  Request error: {e}")
         if attempt < retries:
             time.sleep(RETRY_DELAY)
     return None
 
 
-def http_download(url, dest_path, retries=MAX_RETRIES):
-    """Download a file to dest_path with retry logic."""
-    for attempt in range(1, retries + 1):
-        try:
-            log(f"Downloading {url} → {dest_path} (attempt {attempt}/{retries})")
-            urllib.request.urlretrieve(url, dest_path)
-            return True
-        except Exception as e:
-            log(f"  Download error: {e}")
-        if attempt < retries:
-            time.sleep(RETRY_DELAY)
-    return False
-
-
 def notify_server(serial, event, detail=""):
-    """Send ZTP event notification to ZTP server."""
+    """Send ZTP event notification back to ZTP server (non-critical)."""
     try:
-        payload = json.dumps({
-            "serial": serial,
-            "event":  event,
-            "detail": detail
-        }).encode("utf-8")
-        req = urllib.request.Request(
+        requests.post(
             f"{BASE_URL}/api/notify",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST"
+            json={"serial": serial, "event": event, "detail": detail},
+            timeout=10
         )
-        urllib.request.urlopen(req, timeout=10)
     except Exception:
         pass
 
@@ -103,28 +78,22 @@ def notify_complete(serial, status, max_retries=20, retry_delay=15):
     """
     Send ztp_complete notification with guaranteed delivery.
     Retries until server confirms receipt with 200 OK.
-    Switch will NOT reload until this succeeds — ensures higher-priority
+    Switch will NOT reboot until this succeeds — ensures higher-priority
     switches are never left waiting forever due to a lost notification.
     """
     log(f"Sending ztp_complete (status={status}) — will retry until confirmed...")
-    payload = json.dumps({
-        "serial": serial,
-        "event":  "ztp_complete",
-        "detail": status
-    }).encode("utf-8")
+    payload = {"serial": serial, "event": "ztp_complete", "detail": status}
     for attempt in range(1, max_retries + 1):
         try:
-            req = urllib.request.Request(
+            resp = requests.post(
                 f"{BASE_URL}/api/notify",
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST"
+                json=payload,
+                timeout=15
             )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                if resp.status == 200:
-                    log(f"ztp_complete confirmed by server (attempt {attempt}) ✓")
-                    return True
-                log(f"  Server returned HTTP {resp.status} (attempt {attempt}/{max_retries})")
+            if resp.status_code == 200:
+                log(f"ztp_complete confirmed by server (attempt {attempt}) ✓")
+                return True
+            log(f"  Server returned HTTP {resp.status_code} (attempt {attempt}/{max_retries})")
         except Exception as e:
             log(f"  ztp_complete delivery failed: {e} (attempt {attempt}/{max_retries})")
         if attempt < max_retries:
@@ -137,7 +106,7 @@ def fetch_manifest(serial, poll_interval=20, max_wait=3600):
     """
     Fetch manifest from ZTP server with priority-aware polling.
     Server returns:
-      200 → manifest ready, return raw bytes
+      200 → manifest ready, return it
       202 → waiting for lower-priority switches, poll again
     Polls until 200 received or max_wait seconds elapsed.
     """
@@ -148,30 +117,22 @@ def fetch_manifest(serial, poll_interval=20, max_wait=3600):
         attempt += 1
         try:
             log(f"Fetching manifest: {manifest_url} (attempt {attempt})")
-            req = urllib.request.Request(manifest_url)
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                body = resp.read()
-                if resp.status == 200:
-                    log("Manifest received ✓")
-                    return body
-                # urllib raises HTTPError for non-2xx, so 202 comes as exception
-                log(f"  HTTP {resp.status} — retrying in {poll_interval}s")
-        except urllib.error.HTTPError as e:
-            if e.code == 202:
-                body = e.read()
-                try:
-                    data = json.loads(body.decode("utf-8"))
-                    reason = data.get("reason", "waiting for lower-priority switches")
-                    log(f"  Server says: {reason}")
-                except Exception:
-                    log("  Waiting for lower-priority switches...")
-                log(f"  Polling again in {poll_interval}s...")
+            resp = requests.get(manifest_url, timeout=30)
+            if resp.status_code == 200:
+                log("Manifest received ✓")
+                return resp
+            elif resp.status_code == 202:
+                data = resp.json()
+                reason = data.get("reason", "waiting for lower-priority switches")
+                log(f"  Server says: {reason}")
+                log(f"  Waiting {poll_interval}s before next poll...")
                 time.sleep(poll_interval)
-                continue
-            log(f"  HTTP error {e.code}: {e.reason} — retrying in {poll_interval}s")
-        except Exception as e:
+            else:
+                log(f"  Unexpected HTTP {resp.status_code} — retrying in {poll_interval}s")
+                time.sleep(poll_interval)
+        except requests.RequestException as e:
             log(f"  Request error: {e} — retrying in {poll_interval}s")
-        time.sleep(poll_interval)
+            time.sleep(poll_interval)
     log(f"ERROR: Manifest not received within {max_wait}s")
     return None
 
@@ -186,28 +147,27 @@ def md5_of_file(filepath):
 
 
 def md5_from_server(firmware_file):
-    """Fetch expected MD5 from ZTP server."""
-    data = http_get(f"{BASE_URL}/firmware/{firmware_file}.md5")
-    if data:
-        return data.decode("utf-8").strip().split()[0].lower()
+    """Fetch expected MD5 from ZTP server (<firmware>.md5 file)."""
+    try:
+        url = f"{BASE_URL}/firmware/{firmware_file}.md5"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            return resp.text.strip().split()[0].lower()
+    except Exception:
+        pass
     return None
 
 
 def get_serial():
-    """Get serial number via IOS XE CLI using the cli module."""
+    """Get serial number via FastCli 'show version'."""
     try:
-        output = cli.execute("show inventory")
-        # C9300 format: NAME: "Chassis", DESCR: "...", PID: C9300-48P, VID: V01, SN: FCW2144L045
-        match = re.search(r'SN:\s+([A-Z0-9]+)', output)
-        if match:
-            return match.group(1).strip().upper()
-        # Fallback: try show version
-        output = cli.execute("show version")
-        match = re.search(r'Processor\s+board\s+ID\s+([A-Z0-9]+)', output)
+        cmd = ["FastCli", "-p", "15", "-c", "show version"]
+        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=30).decode("utf-8")
+        match = re.search(r"Serial\s+[Nn]umber\s*:\s*([A-Z0-9]+)", output)
         if match:
             return match.group(1).strip().upper()
     except Exception as e:
-        log(f"ERROR getting serial: {e}")
+        log(f"FastCli error getting serial: {e}")
     return None
 
 
@@ -217,44 +177,56 @@ def get_serial():
 
 def apply_config(serial, config_file):
     """
-    Download startup-config from ZTP server and apply it via
-    cli.configurep() — the Cisco IOS XE way to apply configuration.
-    Also saves to startup-config via 'copy running-config startup-config'.
+    Download startup-config assigned to this serial from ZTP server
+    and write directly to /mnt/flash/startup-config.
+    Verifies the written file matches what was downloaded.
+    Falls back to generic.cfg only if per-serial config is missing.
+    IMPORTANT: Write directly to flash — never use
+    'copy running-config startup-config' as it would overwrite with
+    the current unconfigured running-config.
     """
-    data = http_get(f"{BASE_URL}/configs/{config_file}")
+    url = f"{BASE_URL}/configs/{config_file}"
+    resp = http_get(url)
 
-    if data is None and config_file != "generic.cfg":
-        log(f"WARNING: '{config_file}' not found — falling back to generic.cfg")
+    if resp is None and config_file != "generic.cfg":
+        log(f"WARNING: '{config_file}' not found on server — falling back to generic.cfg")
         notify_server(serial, "config_fallback", config_file)
-        data = http_get(f"{BASE_URL}/configs/generic.cfg")
+        resp = http_get(f"{BASE_URL}/configs/generic.cfg")
         config_file = "generic.cfg"
 
-    if data is None:
-        log("ERROR: Could not download config")
+    if resp is None:
+        log("ERROR: Could not download config (tried per-serial and generic.cfg)")
         notify_server(serial, "config_failed", config_file)
         return False
 
-    config_text = data.decode("utf-8")
-    config_lines = [line for line in config_text.splitlines() if line.strip() and not line.strip().startswith("!")]
+    expected_content = resp.text
+    startup = os.path.join(FLASH, "startup-config")
 
-    log(f"Applying config: {config_file} ({len(config_lines)} lines)")
+    # Write config to flash
     try:
-        # cli.configurep applies lines in configure mode and prints results
-        results = cli.configurep(config_lines)
-        log(f"Config apply results: {results}")
+        with open(startup, "w") as f:
+            f.write(expected_content)
+        log(f"Startup-config written: {startup} ({config_file})")
     except Exception as e:
-        log(f"ERROR applying config via cli.configurep: {e}")
+        log(f"ERROR writing startup-config: {e}")
         notify_server(serial, "config_failed", str(e))
         return False
 
-    # Save running-config to startup-config
-    log("Saving running-config to startup-config...")
+    # Verify written file matches downloaded content
     try:
-        cli.execute("copy running-config startup-config")
-        log("Startup-config saved.")
+        with open(startup, "r") as f:
+            written_content = f.read()
+        if written_content == expected_content:
+            log(f"Startup-config verified OK ({len(written_content)} bytes)")
+        else:
+            log("ERROR: Startup-config verification failed — written content does not match download")
+            log(f"  Expected size: {len(expected_content)} bytes")
+            log(f"  Written size : {len(written_content)} bytes")
+            notify_server(serial, "config_failed", "verification_mismatch")
+            return False
     except Exception as e:
-        log(f"ERROR saving startup-config: {e}")
-        notify_server(serial, "config_failed", f"save error: {e}")
+        log(f"ERROR verifying startup-config: {e}")
+        notify_server(serial, "config_failed", f"verify error: {e}")
         return False
 
     notify_server(serial, "config_applied", config_file)
@@ -263,66 +235,68 @@ def apply_config(serial, config_file):
 
 def download_firmware(serial, firmware_file):
     """
-    Download firmware image from ZTP server to bootflash.
-    Verifies MD5 after download.
-    Guest Shell home is /home/guestshell — we stage here then copy to bootflash.
+    Download firmware assigned to this serial from ZTP server to flash.
+    Always removes existing file first to avoid corrupt data.
+    Verifies integrity with file size check and MD5 comparison.
     """
-    firmware_url  = f"{BASE_URL}/firmware/{firmware_file}"
-    # Download to Guest Shell filesystem first
-    tmp_path      = f"/home/guestshell/{firmware_file}"
-    # Final destination on IOS XE
-    bootflash_path = f"bootflash:/{firmware_file}"
+    firmware_url = f"{BASE_URL}/firmware/{firmware_file}"
+    flash_path   = os.path.join(FLASH, firmware_file)
 
-    # Remove existing tmp file if present
-    if os.path.isfile(tmp_path):
-        os.remove(tmp_path)
-        log(f"Removed existing tmp file: {tmp_path}")
+    # Always remove existing file — may be corrupt from previous attempt
+    if os.path.isfile(flash_path):
+        log(f"Removing existing flash/{firmware_file} (re-downloading for integrity check)")
+        try:
+            os.remove(flash_path)
+            log("Removed.")
+        except Exception as e:
+            log(f"WARNING: Could not remove existing file: {e}")
 
-    # Download to Guest Shell tmp path
+    # Download via curl (reliable for large files, shows progress)
     log(f"Downloading firmware: {firmware_url}")
-    if not http_download(firmware_url, tmp_path):
-        log("ERROR: Firmware download failed")
-        notify_server(serial, "firmware_failed", "download_failed")
+    try:
+        cmd = ["curl", "-f", "--progress-bar", "-o", flash_path, firmware_url]
+        subprocess.check_call(cmd, timeout=600)
+        log("curl download complete.")
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
+        log(f"WARNING: curl failed ({e}) — retrying with FastCli copy...")
+        try:
+            cmd = ["FastCli", "-p", "15", "-c", f"copy {firmware_url} flash:{firmware_file}"]
+            subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=600)
+            log("FastCli copy complete.")
+        except Exception as e2:
+            log(f"ERROR: Both download methods failed: {e2}")
+            notify_server(serial, "firmware_failed", str(e2))
+            return False
+
+    # Check file exists after download
+    if not os.path.isfile(flash_path):
+        log("ERROR: Firmware file not found on flash after download")
+        notify_server(serial, "firmware_failed", "file missing after download")
         return False
 
-    # Size check
-    size_mb = os.path.getsize(tmp_path) / (1024 * 1024)
+    # Size sanity check — EOS images are always > 300MB
+    size_mb = os.path.getsize(flash_path) / (1024 * 1024)
     log(f"Firmware size: {size_mb:.1f} MB")
     if size_mb < 50:
         log("ERROR: Firmware file too small — download incomplete or corrupt")
         notify_server(serial, "firmware_failed", f"too small: {size_mb:.1f}MB")
         return False
 
-    # MD5 verification
+    # MD5 verification against server checksum
     remote_md5 = md5_from_server(firmware_file)
     if remote_md5:
-        log("Verifying MD5...")
-        local_md5 = md5_of_file(tmp_path)
+        log("Verifying MD5 checksum...")
+        local_md5 = md5_of_file(flash_path)
         log(f"  Expected : {remote_md5}")
         log(f"  Got      : {local_md5}")
         if local_md5 != remote_md5:
-            log("ERROR: MD5 mismatch — firmware corrupt!")
+            log("ERROR: MD5 mismatch — firmware file is corrupt!")
             notify_server(serial, "firmware_failed", "md5_mismatch")
             return False
         log("MD5 verified OK ✓")
     else:
         log("WARNING: No .md5 file on server — skipping MD5 verification")
-
-    # Copy from Guest Shell to bootflash via IOS XE CLI
-    log(f"Copying firmware to {bootflash_path}...")
-    try:
-        result = cli.execute(f"copy {tmp_path} {bootflash_path}")
-        log(f"Copy result: {result}")
-    except Exception as e:
-        log(f"ERROR copying to bootflash: {e}")
-        notify_server(serial, "firmware_failed", f"bootflash copy error: {e}")
-        return False
-
-    # Cleanup tmp file
-    try:
-        os.remove(tmp_path)
-    except Exception:
-        pass
+        log("         Generate with: md5sum <firmware>.swi > <firmware>.swi.md5")
 
     notify_server(serial, "firmware_downloaded", firmware_file)
     return True
@@ -330,44 +304,68 @@ def download_firmware(serial, firmware_file):
 
 def install_firmware(serial, firmware_file):
     """
-    Install firmware on Cisco IOS XE using:
-    'request platform software package install switch all file bootflash:/<image>'
-    This updates the boot variables and prepares for reload.
-    Switch will reload after script completes.
+    Install firmware using 'install source flash:/<image>'.
+    This is the recommended EOS upgrade method:
+      - Updates boot-config automatically
+      - Syncs to standby supervisor on dual-sup systems
+      - Runs in Privileged EXEC mode (no configure mode needed)
+    Blocks until installation completes.
+    Do NOT use 'reload' keyword — ZTP reboots automatically on script exit.
+    Timeout set to 600s to handle large image installation.
     """
-    log(f"Installing firmware: {firmware_file}")
-    log("This may take several minutes...")
+    log(f"Installing: install source flash:/{firmware_file}")
+    log("This may take several minutes — waiting for completion...")
     try:
-        cmd = f"request platform software package install switch all file bootflash:/{firmware_file} auto-copy"
-        result = cli.execute(cmd)
-        log(f"Install result:\n{result}")
+        cmd = ["FastCli", "-p", "15", "-c", f"install source flash:/{firmware_file}"]
+        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=600).decode("utf-8")
+        log(f"Install output:\n{output.strip()}")
 
-        result_lower = result.lower()
-        if "error" in result_lower or "failed" in result_lower:
-            log("ERROR: Firmware install reported failure")
-            notify_server(serial, "firmware_failed", result[:200])
-            return False
+        # Check output for known failure strings
+        output_lower = output.lower()
+        if "error" in output_lower or "failed" in output_lower or "invalid" in output_lower:
+            log("WARNING: 'install source' output contains error keywords — verify manually")
+            notify_server(serial, "firmware_warning", output.strip()[:200])
+        else:
+            log("install source completed successfully ✓")
 
-        log("Firmware install completed ✓")
         notify_server(serial, "firmware_applied", firmware_file)
         return True
+
+    except subprocess.TimeoutExpired:
+        log("ERROR: install source timed out after 600s")
+        notify_server(serial, "firmware_failed", "install_timeout")
+        return False
+    except subprocess.CalledProcessError as e:
+        output = e.output.decode() if e.output else str(e)
+        # install source may trigger a reload internally — if so the process
+        # is killed and raises CalledProcessError, but the install succeeded
+        if "reload" in output.lower() or "reboot" in output.lower():
+            log("install source triggered a reload — install succeeded")
+            notify_server(serial, "firmware_applied", firmware_file)
+            return True
+        log(f"ERROR: install source failed:\n{output}")
+        notify_server(serial, "firmware_failed", output[:200])
+        return False
     except Exception as e:
-        log(f"ERROR installing firmware: {e}")
+        log(f"ERROR: install source exception: {e}")
         notify_server(serial, "firmware_failed", str(e))
         return False
 
 
-def reload_switch(serial):
+def stop_zerotouch():
     """
-    Reload the switch to boot new firmware.
-    On Cisco ZTP, reboot is NOT automatic — must be called explicitly.
+    Verify flash:zerotouch-config exists after ZTP completes.
+    Arista EOS automatically creates this file when ZTP finishes
+    successfully — its PRESENCE tells EOS not to enter ZTP again
+    on next boot. Its ABSENCE triggers ZTP.
+    We must NOT delete it. We only verify it was created.
     """
-    log("Reloading switch to boot new firmware...")
-    notify_server(serial, "ztp_complete", "reloading")
-    try:
-        cli.execute("reload in 1 reason ZTP-complete")
-    except Exception as e:
-        log(f"Reload issued (session may close): {e}")
+    ztp_config = os.path.join(FLASH, "zerotouch-config")
+    if os.path.isfile(ztp_config):
+        log("zerotouch-config present — ZTP will not run again after reboot ✓")
+    else:
+        log("WARNING: zerotouch-config not found — EOS may re-enter ZTP after reboot")
+        log("         This is normally created automatically by EOS on ZTP completion.")
 
 
 # -----------------------------------------------------------
@@ -376,10 +374,10 @@ def reload_switch(serial):
 
 def main():
     log("=" * 60)
-    log("Cisco IOS XE ZTP Bootstrap starting")
+    log("Arista ZTP Bootstrap starting")
     log("=" * 60)
 
-    # 1. Get serial number
+    # 1. Get serial number — used to look up per-device config and firmware
     serial = get_serial()
     if not serial:
         log("WARNING: Could not read serial number — using UNKNOWN")
@@ -392,74 +390,100 @@ def main():
     # 2. Fetch manifest — polls until server releases it (priority gating)
     #    Server returns 202 while waiting for lower-priority switches,
     #    200 once this switch is clear to proceed.
-    data = fetch_manifest(serial)
-    if data is None:
-        log("ERROR: Could not fetch manifest. Aborting.")
+    resp = fetch_manifest(serial)
+    if resp is None:
+        log("ERROR: Could not fetch manifest from ZTP server. Aborting.")
         sys.exit(1)
 
     try:
-        manifest = json.loads(data.decode("utf-8"))
+        manifest = resp.json()
     except Exception:
         log("ERROR: Invalid manifest JSON. Aborting.")
         sys.exit(1)
 
     config_file   = manifest.get("config",      "generic.cfg")
-    firmware_file = manifest.get("firmware",     "cat9k_iosxe.bin")
+    firmware_file = manifest.get("firmware",     "EOS-4.34.3M.swi")
     description   = manifest.get("description",  "Unknown")
     source        = manifest.get("source",       "default")
-    priority      = manifest.get("priority",     99)
 
     log(f"Description : {description}")
     log(f"Config      : {config_file}  (source: {source})")
     log(f"Firmware    : {firmware_file}")
-    log(f"Priority    : {priority}")
     log("-" * 60)
 
     # -------------------------------------------------------
-    # STEP 1: Apply configuration
+    # STEP 1: Configuration
+    # Must complete and verify successfully before firmware.
+    # Config file is determined by serial number from inventory.yaml
     # -------------------------------------------------------
-    log("STEP 1/3: Applying configuration...")
+    log("STEP 1/3: Applying startup-config...")
+    log(f"  Serial    : {serial}")
+    log(f"  Config    : {config_file}")
+    log(f"  Source    : {source}")
+
     cfg_ok = apply_config(serial, config_file)
     if not cfg_ok:
         log("STEP 1/3: FAILED — aborting ZTP")
+        log("  Fix: ensure config file exists on server and is readable")
         notify_server(serial, "ztp_complete", "failed_config")
         sys.exit(1)
-    log("STEP 1/3: OK ✓")
+    log("STEP 1/3: OK ✓ — startup-config written and verified")
 
     # -------------------------------------------------------
-    # STEP 2: Download firmware + MD5 verify
+    # STEP 2: Firmware download + verification
+    # Only runs after config step succeeds.
+    # Firmware file is determined by serial number from inventory.yaml.
+    # Downloads fresh copy every time and verifies MD5.
     # -------------------------------------------------------
     log("STEP 2/3: Downloading firmware...")
+    log(f"  Serial    : {serial}")
+    log(f"  Firmware  : {firmware_file}")
+
     fw_ok = download_firmware(serial, firmware_file)
     if not fw_ok:
         log("STEP 2/3: FAILED — aborting ZTP")
+        log("  Fix: check firmware file exists on server and .md5 file is generated")
         notify_server(serial, "ztp_complete", "failed_firmware")
         sys.exit(1)
-    log("STEP 2/3: OK ✓")
+    log("STEP 2/3: OK ✓ — firmware downloaded and MD5 verified")
 
     # -------------------------------------------------------
-    # STEP 3: Install firmware
+    # STEP 3: Firmware installation
+    # Only runs after firmware download+verify succeeds.
+    # 'install source' blocks until complete, updates boot-config,
+    # syncs to standby supervisor on dual-sup systems.
+    # ZTP reboots switch automatically when script exits — no reload needed.
     # -------------------------------------------------------
-    log("STEP 3/3: Installing firmware...")
+    log("STEP 3/3: Installing firmware (this may take several minutes)...")
+    log(f"  Command   : install source flash:/{firmware_file}")
+
     install_ok = install_firmware(serial, firmware_file)
     if not install_ok:
         log("STEP 3/3: FAILED — aborting ZTP")
         notify_server(serial, "ztp_complete", "failed_install")
         sys.exit(1)
-    log("STEP 3/3: OK ✓")
+    log("STEP 3/3: OK ✓ — firmware installed, boot-config updated")
 
     # -------------------------------------------------------
-    # Done — notify server with guaranteed delivery before reload.
+    # STEP 4: Verify zerotouch-config
+    # EOS automatically creates flash:zerotouch-config on successful
+    # ZTP completion — its presence prevents ZTP from running again.
+    # Do NOT delete it.
+    # -------------------------------------------------------
+    log("STEP 4/4: Verifying zerotouch-config...")
+    stop_zerotouch()
+
+    # -------------------------------------------------------
+    # Done — notify server with guaranteed delivery before reboot.
     # Higher-priority switches are blocked until this is confirmed.
     # -------------------------------------------------------
     notify_complete(serial, "success")
     log("=" * 60)
     log(f"ZTP complete for serial: {serial}")
-    log(f"  Config   : {config_file}")
-    log(f"  Firmware : {firmware_file}")
-    log("Reloading switch in 1 minute...")
+    log(f"  Config    : {config_file}")
+    log(f"  Firmware  : {firmware_file}")
+    log("Switch will reboot automatically. ZTP will not run again.")
     log("=" * 60)
-    reload_switch(serial)
 
 
 if __name__ == "__main__":

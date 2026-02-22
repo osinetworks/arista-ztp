@@ -14,8 +14,9 @@ RUN apk add --no-cache \
     net-tools \
     curl
 
-# Copy dnsmasq config
-COPY config/dnsmasq.conf /etc/dnsmasq.conf
+# Copy dnsmasq config template — rendered to /etc/dnsmasq.conf at container startup
+# by entrypoint.sh using env vars from .env via docker-compose
+COPY config/dnsmasq.conf.template /etc/dnsmasq.conf.template
 
 # Copy ZTP server application
 COPY scripts/ztp_server.py /usr/local/bin/ztp_server.py
