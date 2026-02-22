@@ -1,0 +1,60 @@
+services:
+  ztp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ztp-server:latest
+    container_name: ztp-server
+    restart: unless-stopped
+
+    # Host networking gives dnsmasq full access to the physical interface
+    # for DHCP. Use bridge mode only if you know what you're doing.
+    network_mode: host
+
+    environment:
+      # ZTP server settings
+      - ZTP_HOST=0.0.0.0
+      - ZTP_PORT=8080
+      - ZTP_BASE_DIR=/var/www/ztp
+      - INVENTORY_PATH=/var/www/ztp/config/inventory.yaml
+      - LOG_DIR=/var/www/ztp/logs
+      - LOG_LEVEL=INFO
+      # Server IP — included in manifest response so switches know
+      # which vendor bootstrap was served. Must match your laptop's
+      # IP on the switch-facing interface.
+      - ZTP_SERVER_IP=192.168.100.1
+      # Max seconds to wait for lower-priority switches before
+      # releasing the manifest anyway (default 30 min)
+      - PRIORITY_WAIT_TIMEOUT=1800
+
+    volumes:
+      # Inventory config (editable without rebuild)
+      - ./config/inventory.yaml:/var/www/ztp/config/inventory.yaml
+
+      # dnsmasq config (editable without rebuild)
+      - ./config/dnsmasq.conf:/etc/dnsmasq.conf
+
+      # Bootstrap scripts (editable without rebuild)
+      - ./scripts/bootstrap_arista:/var/www/ztp/bootstrap_arista
+      - ./scripts/bootstrap_cisco:/var/www/ztp/bootstrap_cisco
+
+      # Switch-specific and generic configs
+      - ./configs:/var/www/ztp/configs
+
+      # Firmware images (large files, keep outside image)
+      - ./firmware:/var/www/ztp/firmware
+
+      # Persistent logs
+      - ./logs:/var/www/ztp/logs
+
+    # Required for dnsmasq to serve DHCP
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

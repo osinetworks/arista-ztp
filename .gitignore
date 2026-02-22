@@ -1,0 +1,10 @@
+venv/, .venv/, .env,
+secrets.yaml
+.pyc, __pycache__/
+HBG25270B63.*
+HBG240504PH.*
+FVH283113TJ.*
+*.bin
+*.swi
+inventory.yaml
+*.log
