@@ -86,26 +86,28 @@ class InventoryManager:
             switch = self._index[serial]
             logger.info(f"Manifest hit  : {serial} → {switch.get('config')} / {switch.get('firmware')} (priority {switch.get('priority', 99)})")
             return {
-                "serial":      serial,
-                "description": switch.get("description", ""),
-                "platform":    switch.get("platform",    defaults.get("platform", "eos")),
-                "firmware":    switch.get("firmware",    defaults.get("firmware")),
-                "config":      switch.get("config",      defaults.get("config")),
-                "priority":    int(switch.get("priority", 99)),
-                "tags":        switch.get("tags",        []),
-                "source":      "inventory",
+                "serial":        serial,
+                "description":   switch.get("description", ""),
+                "platform":      switch.get("platform",    defaults.get("platform", "eos")),
+                "firmware":      switch.get("firmware",    defaults.get("firmware")),
+                "firmware_md5":  switch.get("firmware_md5", defaults.get("firmware_md5", "")),
+                "config":        switch.get("config",      defaults.get("config")),
+                "priority":      int(switch.get("priority", 99)),
+                "tags":          switch.get("tags",        []),
+                "source":        "inventory",
             }
         else:
             logger.warning(f"Manifest miss : {serial} → using defaults")
             return {
-                "serial":      serial,
-                "description": "Unknown / Unregistered Switch",
-                "platform":    defaults.get("platform", "eos"),
-                "firmware":    defaults.get("firmware", "EOS-4.34.3M.swi"),
-                "config":      defaults.get("config",   "generic.cfg"),
-                "priority":    int(defaults.get("priority", 99)),
-                "tags":        [],
-                "source":      "default",
+                "serial":        serial,
+                "description":   "Unknown / Unregistered Switch",
+                "platform":      defaults.get("platform", "eos"),
+                "firmware":      defaults.get("firmware", "EOS-4.34.3M.swi"),
+                "firmware_md5":  defaults.get("firmware_md5", ""),
+                "config":        defaults.get("config",   "generic.cfg"),
+                "priority":      int(defaults.get("priority", 99)),
+                "tags":          [],
+                "source":        "default",
             }
 
     def list_switches(self) -> List[Dict]:
