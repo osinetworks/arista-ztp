@@ -1,0 +1,166 @@
+# ============================================================
+# Multi-Vendor ZTP Inventory Template
+# ============================================================
+# USAGE:
+#   cp inventory.yaml.template inventory.yaml
+#   Edit inventory.yaml with your real switch serials and filenames.
+#
+# IMPORTANT — inventory.yaml is in .gitignore (contains real serials).
+#             This template is what you commit to git instead.
+# ============================================================
+
+
+# -----------------------------------------------------------
+# Global defaults
+# Applied to any switch whose serial is NOT listed below.
+# Useful for homogeneous environments or as a safety net.
+# -----------------------------------------------------------
+defaults:
+  platform: eos                   # eos | eos64 | cisco_ios
+  firmware: EOS-4.34.3M.swi       # default EOS image filename
+  config:   generic.cfg           # fallback config (no serial match)
+  priority: 99                    # unregistered switches provision last
+
+
+# -----------------------------------------------------------
+# Per-switch definitions
+# -----------------------------------------------------------
+#
+# Fields:
+#   serial        Switch serial number (case-insensitive, auto-uppercased).
+#
+#   description   Human-readable label shown in dashboard and logs.
+#
+#   platform      One of:
+#                   eos        — Arista EOS (32-bit, all platforms)
+#                   eos64      — Arista EOS64 (64-bit, newer platforms)
+#                   cisco_ios  — Cisco IOS XE (Cat9k family)
+#
+#   firmware      Filename of the image to install (must exist in
+#                 /var/www/ztp/firmware/ on the ZTP server).
+#                 Arista : <name>.swi  or  <name>.swi.gz
+#                 Cisco  : cat9k_iosxe.<version>.SPA.bin
+#                          cat9k_lite_iosxe.<version>.SPA.bin  (C9200L)
+#
+#   firmware_md5  Optional MD5 checksum of the firmware file.
+#                 When set, used for end-to-end integrity verification.
+#                 Generate: md5sum <firmware-file> | awk '{print $1}'
+#                 Cisco bootstrap also uses native IOS XE 'verify /md5'.
+#                 Leave blank ("") to rely on server-side .md5 file only.
+#
+#   config        Filename of the per-switch config (must exist in
+#                 /var/www/ztp/configs/ on the ZTP server).
+#                 Falls back to generic.cfg if the file is missing.
+#
+#   priority      Provisioning order — integer, lower = first.
+#                 Switches at the SAME priority provision in PARALLEL.
+#                 A switch at priority N waits until ALL switches at
+#                 priority < N have reported ztp_complete.
+#
+#                 Example ordering:
+#                   priority 1 (parallel) → core switches first
+#                   priority 2 (parallel) → distribution, after core done
+#                   priority 3            → access, after distribution done
+#
+#   tags          Free-form labels for grouping/filtering (optional).
+#                 Not used by ZTP logic — purely informational.
+#
+# -----------------------------------------------------------
+
+switches:
+
+  # ----------------------------------------------------------
+  # Priority 1 — Core / Uplink switches (provision first)
+  # All priority-1 switches boot simultaneously.
+  # ----------------------------------------------------------
+
+  - serial: CHANGE_ME_SERIAL_1
+    description: "Core-SW-1"
+    platform: eos
+    firmware: EOS-4.34.3M.swi
+    firmware_md5: ""              # md5sum EOS-4.34.3M.swi | awk '{print $1}'
+    config: CHANGE_ME_SERIAL_1.cfg
+    priority: 1
+    tags:
+      - core
+      - rack-a
+
+  - serial: CHANGE_ME_SERIAL_2
+    description: "Core-SW-2"
+    platform: eos64
+    firmware: EOS64-4.34.3M.swi
+    firmware_md5: ""              # md5sum EOS64-4.34.3M.swi | awk '{print $1}'
+    config: CHANGE_ME_SERIAL_2.cfg
+    priority: 1                   # parallel with Core-SW-1
+    tags:
+      - core
+      - rack-b
+
+  # ----------------------------------------------------------
+  # Priority 2 — Distribution / Management switches
+  # Wait for ALL priority-1 switches to complete before starting.
+  # ----------------------------------------------------------
+
+  - serial: CHANGE_ME_SERIAL_3
+    description: "Dist-SW-1"
+    platform: cisco_ios
+    firmware: cat9k_iosxe.17.12.05.SPA.bin
+    firmware_md5: ""              # md5sum cat9k_iosxe.17.12.05.SPA.bin | awk '{print $1}'
+    config: CHANGE_ME_SERIAL_3.cfg
+    priority: 2
+    tags:
+      - distribution
+      - mgmt
+
+  # ----------------------------------------------------------
+  # Priority 3 — Access switches (C9200L — uses AutoInstall)
+  # Wait for ALL priority-2 switches to complete before starting.
+  # Note: C9200L uses cat9k_LITE image and AutoInstall (no Guest Shell).
+  # ----------------------------------------------------------
+
+  - serial: CHANGE_ME_SERIAL_4
+    description: "Access-SW-1"
+    platform: cisco_ios
+    firmware: cat9k_lite_iosxe.17.12.05.SPA.bin
+    firmware_md5: ""              # md5sum cat9k_lite_iosxe.17.12.05.SPA.bin | awk '{print $1}'
+    config: CHANGE_ME_SERIAL_4.cfg
+    priority: 3
+    tags:
+      - access
+      - floor-1
+
+  - serial: CHANGE_ME_SERIAL_5
+    description: "Access-SW-2"
+    platform: cisco_ios
+    firmware: cat9k_lite_iosxe.17.12.05.SPA.bin
+    firmware_md5: ""              # same lite image — fill in md5 once
+    config: CHANGE_ME_SERIAL_5.cfg
+    priority: 3                   # parallel with Access-SW-1
+    tags:
+      - access
+      - floor-2
+
+
+# -----------------------------------------------------------
+# Notes
+# -----------------------------------------------------------
+#
+# Supported Cisco firmware naming conventions:
+#   Cat9300 / Cat9500  : cat9k_iosxe.<ver>.SPA.bin
+#   Cat9200L           : cat9k_lite_iosxe.<ver>.SPA.bin
+#   ASR1001-HX         : asr1000-universalk9.<ver>.SPA.bin
+#
+# Supported Arista firmware naming conventions:
+#   32-bit platforms   : EOS-<ver>.swi
+#   64-bit platforms   : EOS64-<ver>.swi
+#
+# To find a switch serial:
+#   Arista  : show version | grep Serial
+#   Cisco   : show inventory | grep SN
+#             show version  | grep "Processor board ID"
+#
+# To generate a firmware_md5:
+#   Linux/macOS : md5sum <file> | awk '{print $1}'
+#   macOS only  : md5 -q <file>
+#
+# -----------------------------------------------------------
