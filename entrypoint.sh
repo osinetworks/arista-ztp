@@ -124,12 +124,15 @@ echo "[entrypoint] dnsmasq interface set to: $IFACE"
 # Start dnsmasq
 # -----------------------------------------------------------
 echo "[entrypoint] Starting dnsmasq..."
-# dnsmasq reads /etc/dnsmasq.conf by default — no --conf-file flag needed
+# Load main rendered config (dhcp-range, option 67, etc.) first,
+# then the interface override. Using --conf-file replaces the default
+# /etc/dnsmasq.conf path, so we must specify both explicitly.
 dnsmasq \
     --no-daemon \
     --log-dhcp \
     --log-queries \
     --log-facility=- \
+    --conf-file="$DNSMASQ_RENDERED" \
     --conf-file="$DNSMASQ_IFACE_CONF" &
 DNSMASQ_PID=$!
 

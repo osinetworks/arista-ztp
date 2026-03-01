@@ -33,11 +33,11 @@ dhcp-option=tag:arista,67,http://__SERVER_IP__:__HTTP_PORT__/bootstrap/arista
 
 # Cisco switches (IOS XE 16.x+)
 dhcp-vendorclass=set:cisco_pnp,ciscopnp
-dhcp-option=tag:cisco_pnp,67,http://__SERVER_IP__:__HTTP_PORT__/bootstrap/cisco
+dhcp-option=tag:cisco_pnp,67,http://__SERVER_IP__:__HTTP_PORT__/bootstrap/cisco.cfg
 
 # Cisco switches (older IOS XE / fallback vendor string)
 dhcp-vendorclass=set:cisco_sys,Cisco Systems
-dhcp-option=tag:cisco_sys,67,http://__SERVER_IP__:__HTTP_PORT__/bootstrap/cisco
+dhcp-option=tag:cisco_sys,67,http://__SERVER_IP__:__HTTP_PORT__/bootstrap/cisco.cfg
 
 # Fallback for unknown vendors — serve Arista bootstrap by default
 dhcp-option=67,http://__SERVER_IP__:__HTTP_PORT__/bootstrap/arista
