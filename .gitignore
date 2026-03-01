@@ -21,7 +21,6 @@ firmware/*.md5
 configs/*.cfg
 
 # --- Logs ---
-logs/
 *.log
 
 # --- Python ---
