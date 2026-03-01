@@ -1,12 +1,49 @@
-venv/, .venv/, .env,
+# ============================================================
+# ZTP Server — .gitignore
+# ============================================================
+
+# --- Environment & secrets ---
+.env
 secrets.yaml
-.pyc, __pycache__/
-HBG25270B63.*
-HBG240504PH.*
-FVH283113TJ.*
-*.bin
-*.swi
-inventory.yaml
+
+# --- Inventory with real serial numbers ---
+# Commit inventory.yaml.template instead.
+config/inventory.yaml
+
+# --- Firmware images (large binaries — use a file server) ---
+firmware/*.bin
+firmware/*.swi
+firmware/*.swi.gz
+firmware/*.md5
+
+# --- Per-device configs (may contain credentials) ---
+# Remove these lines if your configs are safe to commit.
+configs/*.cfg
+
+# --- Logs ---
+logs/
 *.log
-old
-org
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# --- Docker ---
+.dockerignore
+
+# --- Editor & OS ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+
+# --- Scratch / working dirs ---
+old/
+org/
+tmp/
